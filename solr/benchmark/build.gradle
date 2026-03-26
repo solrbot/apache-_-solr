@@ -49,7 +49,6 @@ dependencies {
   implementation project(':solr:solrj-streaming')
 
   implementation 'org.apache.lucene:lucene-core'
-  implementation 'org.apache.httpcomponents:httpclient'
   implementation 'commons-io:commons-io'
   implementation 'io.dropwizard.metrics:metrics-core'
   implementation 'org.apache.commons:commons-math3'
