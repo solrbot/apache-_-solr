@@ -56,6 +56,12 @@ allprojects {
     conf.shouldResolveConsistentlyWith(project.configurations.runtimeClasspath)
   }
 
+  // Force JRE variant of Guava. Google Cloud libraries transitively pull in the android variant,
+  // which is compiled for Java 7 and missing JRE-only APIs. Solr is server-side and requires JRE.
+  configurations.all {
+    resolutionStrategy.force "com.google.guava:guava:${libs.versions.google.guava.get()}"
+  }
+
   dependencies {
     modules {
       module("org.hamcrest:hamcrest-core") {
