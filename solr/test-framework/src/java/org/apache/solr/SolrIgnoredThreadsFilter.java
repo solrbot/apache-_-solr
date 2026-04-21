@@ -92,6 +92,13 @@ public class SolrIgnoredThreadsFilter implements ThreadFilter {
       return true;
     }
 
+    // AWS SDK v2 response input stream timeout scheduler (introduced in 2.32.32).
+    // The thread times out naturally after 60s but outlives short test suites.
+    // See https://github.com/aws/aws-sdk-java-v2/issues/6567
+    if (threadName.equals("response-input-stream-timeout-scheduler")) {
+      return true;
+    }
+
     // TestContainers
     if (threadName.startsWith("testcontainers-ryuk")
         || threadName.startsWith("testcontainers-wait-")
