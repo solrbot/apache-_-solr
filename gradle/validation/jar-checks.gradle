@@ -158,7 +158,9 @@ subprojects {
           def file = resolvedArtifact.file
           if (visited.add(file)) {
             infos.add([
-                name           : resolvedArtifact.name,
+                // resolvedArtifact.name may contain path separators when Gradle uses capability-based
+                // variant redirection (e.g. guava:android redirects to guava:jre). Extract only the filename part.
+                name           : new File(resolvedArtifact.name).name,
                 jarName        : file.toPath().getFileName().toString(),
                 path           : file,
                 module         : resolvedArtifact.moduleVersion,
