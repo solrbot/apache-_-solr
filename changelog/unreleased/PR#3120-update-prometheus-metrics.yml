@@ -1,4 +1,4 @@
-title: Update prometheus.metrics to v1.5.0
+title: Update prometheus.metrics to v1.5.1
 type: dependency_update
 authors:
 - name: solrbot
