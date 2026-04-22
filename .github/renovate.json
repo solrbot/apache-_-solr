@@ -2,7 +2,10 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "includePaths": ["versions.*", "build.gradle", ".github/workflows/*"],
   "postUpgradeTasks": {
-    "commands": ["./gradlew updateLicenses"],
+    "commands": [
+      "./gradlew --write-locks",
+      "./gradlew updateLicenses"
+    ],
     "fileFilters": ["solr/licenses/*.sha1"],
     "executionMode": "branch"
   },
@@ -10,12 +13,5 @@
   "prConcurrentLimit": 100,
   "prHourlyLimit": 10,
   "branchPrefix": "renovate-9x/",
-  "commitMessageSuffix": " (branch_9x)",
-  "packageRules": [
-    {
-      "description": "Skip errorprone upgrades since newer versions require JDK17",
-      "matchPackagePrefixes": ["com.google.errorprone"],
-      "enabled": false
-    }
-  ]
+  "commitMessageSuffix": " (branch_9x)"
 }
