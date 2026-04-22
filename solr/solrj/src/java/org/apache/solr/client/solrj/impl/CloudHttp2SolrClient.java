@@ -53,7 +53,11 @@ public class CloudHttp2SolrClient extends CloudSolrClient {
    * @param builder a {@link Http2SolrClient.Builder} with the options used to create the client.
    */
   protected CloudHttp2SolrClient(Builder builder) {
-    super(builder.shardLeadersOnly, builder.parallelUpdates, builder.directUpdatesToLeadersOnly);
+    super(
+        builder.shardLeadersOnly,
+        builder.parallelUpdates,
+        builder.directUpdatesToLeadersOnly,
+        builder.parallelCacheRefreshesLocks);
     this.clientIsInternal = builder.httpClient == null;
     this.myClient = createOrGetHttpClientFromBuilder(builder);
     this.stateProvider = createClusterStateProvider(builder);
@@ -68,10 +72,6 @@ public class CloudHttp2SolrClient extends CloudSolrClient {
 
     this.collectionStateCache.timeToLiveMs =
         TimeUnit.MILLISECONDS.convert(builder.timeToLiveSeconds, TimeUnit.SECONDS);
-
-    //  If caches are expired then they are refreshed after acquiring a lock. Set the number of
-    // locks.
-    this.locks = objectList(builder.parallelCacheRefreshesLocks);
 
     this.lbClient = new LBHttp2SolrClient.Builder(myClient, new String[0]).build();
   }
@@ -162,11 +162,6 @@ public class CloudHttp2SolrClient extends CloudSolrClient {
     return myClient;
   }
 
-  @Override
-  protected boolean wasCommError(Throwable rootCause) {
-    return false;
-  }
-
   /** Constructs {@link CloudHttp2SolrClient} instances from provided configuration. */
   public static class Builder {
     protected Collection<String> zkHosts = new ArrayList<>();
@@ -185,7 +180,7 @@ public class CloudHttp2SolrClient extends CloudSolrClient {
 
     private String defaultCollection;
     private long timeToLiveSeconds = 60;
-    private int parallelCacheRefreshesLocks = 3;
+    private int parallelCacheRefreshesLocks = DEFAULT_STATE_REFRESH_PARALLELISM;
     private int zkConnectTimeout = SolrZkClientTimeout.DEFAULT_ZK_CONNECT_TIMEOUT;
     private int zkClientTimeout = SolrZkClientTimeout.DEFAULT_ZK_CLIENT_TIMEOUT;
     private boolean canUseZkACLs = true;
@@ -333,10 +328,10 @@ public class CloudHttp2SolrClient extends CloudSolrClient {
     }
 
     /**
-     * When caches are expired then they are refreshed after acquiring a lock. Use this to set the
-     * number of locks.
+     * Configures how many collection state refresh operations may run in parallel using a dedicated
+     * thread pool. This controls the maximum number of concurrent ZooKeeper/cluster state lookups.
      *
-     * <p>Defaults to 3.
+     * <p>Defaults to 5.
      *
      * @deprecated Please use {@link #withParallelCacheRefreshes(int)}
      */
@@ -347,10 +342,10 @@ public class CloudHttp2SolrClient extends CloudSolrClient {
     }
 
     /**
-     * When caches are expired then they are refreshed after acquiring a lock. Use this to set the
-     * number of locks.
+     * Configures how many collection state refresh operations may run in parallel using a dedicated
+     * thread pool. This controls the maximum number of concurrent ZooKeeper/cluster state lookups.
      *
-     * <p>Defaults to 3.
+     * <p>Defaults to 5.
      */
     public Builder withParallelCacheRefreshes(int parallelCacheRefreshesLocks) {
       this.parallelCacheRefreshesLocks = parallelCacheRefreshesLocks;
@@ -406,19 +401,20 @@ public class CloudHttp2SolrClient extends CloudSolrClient {
     }
 
     /**
-     * Set the internal http client.
+     * Set the internal {@link Http2SolrClient}.
      *
-     * <p>Note: closing the httpClient instance is at the responsibility of the caller.
+     * <p>Note: closing the client instance is the responsibility of the caller.
      *
-     * @param httpClient http client
      * @return this
+     * @deprecated Please use {@link #withInternalClientBuilder(Http2SolrClient.Builder)}
      */
-    public Builder withHttpClient(Http2SolrClient httpClient) {
+    @Deprecated(since = "9.9")
+    public Builder withHttpClient(Http2SolrClient httpSolrClient) {
       if (this.internalClientBuilder != null) {
         throw new IllegalStateException(
             "The builder can't accept an httpClient AND an internalClientBuilder, only one of those can be provided");
       }
-      this.httpClient = httpClient;
+      this.httpClient = httpSolrClient;
       return this;
     }
 
@@ -430,13 +426,18 @@ public class CloudHttp2SolrClient extends CloudSolrClient {
      * @param internalClientBuilder the builder to use for creating the internal http client.
      * @return this
      */
-    public Builder withInternalClientBuilder(Http2SolrClient.Builder internalClientBuilder) {
+    public Builder withHttpClientBuilder(Http2SolrClient.Builder internalClientBuilder) {
       if (this.httpClient != null) {
         throw new IllegalStateException(
             "The builder can't accept an httpClient AND an internalClientBuilder, only one of those can be provided");
       }
       this.internalClientBuilder = internalClientBuilder;
       return this;
+    }
+
+    @Deprecated(since = "9.10")
+    public Builder withInternalClientBuilder(Http2SolrClient.Builder internalClientBuilder) {
+      return withHttpClientBuilder(internalClientBuilder);
     }
 
     /**

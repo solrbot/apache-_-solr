@@ -36,6 +36,18 @@ if (skipReason) {
 }
 
 allprojects { prj ->
+  dependencies {
+    constraints {
+      rootConfiguration('com.google.errorprone:error_prone_annotations') {
+        version { strictly '2.31.0' }
+        because 'Lock Error Prone dependencies to 2.31.0 to prevent accidental upgrades'
+      }
+      rootConfiguration('com.google.errorprone:error_prone_core') {
+        version { strictly '2.31.0' }
+        because 'Lock Error Prone dependencies to 2.31.0 to prevent accidental upgrades'
+      }
+    }
+  }
   plugins.withType(JavaPlugin) {
     // LUCENE-9650: Errorprone on master/gradle does not work when running as plugin
     // inside a forked Javac process. Javac running inside Gradle works, because we have

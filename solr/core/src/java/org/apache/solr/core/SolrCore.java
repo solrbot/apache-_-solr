@@ -172,9 +172,9 @@ import org.apache.solr.update.processor.UpdateRequestProcessorChain;
 import org.apache.solr.update.processor.UpdateRequestProcessorChain.ProcessorInfo;
 import org.apache.solr.update.processor.UpdateRequestProcessorFactory;
 import org.apache.solr.util.IOFunction;
+import org.apache.solr.util.IndexInputInputStream;
 import org.apache.solr.util.IndexOutputOutputStream;
 import org.apache.solr.util.NumberUtils;
-import org.apache.solr.util.PropertiesInputStream;
 import org.apache.solr.util.RefCounted;
 import org.apache.solr.util.TestInjection;
 import org.apache.solr.util.circuitbreaker.CircuitBreaker;
@@ -457,7 +457,7 @@ public class SolrCore implements SolrInfoBean, Closeable {
       return dataDir + "index/";
     }
     // c'tor just assigns a variable here, no exception thrown.
-    final InputStream is = new PropertiesInputStream(input);
+    final InputStream is = new IndexInputInputStream(input);
     try {
       Properties p = new Properties();
       p.load(new InputStreamReader(is, StandardCharsets.UTF_8));
@@ -1246,10 +1246,12 @@ public class SolrCore implements SolrInfoBean, Closeable {
 
       // ZK pre-register would have already happened so we read slice properties now
       final ClusterState clusterState = coreContainer.getZkController().getClusterState();
+      final CloudDescriptor cloudDescriptor = coreDescriptor.getCloudDescriptor();
       final DocCollection collection =
-          clusterState.getCollection(coreDescriptor.getCloudDescriptor().getCollectionName());
-      final Slice slice = collection.getSlice(coreDescriptor.getCloudDescriptor().getShardId());
-      if (slice.getState() == Slice.State.CONSTRUCTION) {
+          clusterState.getCollection(cloudDescriptor.getCollectionName());
+      final Slice slice = collection.getSlice(cloudDescriptor.getShardId());
+      if (slice.getState() == Slice.State.CONSTRUCTION
+          && getUpdateHandler().getUpdateLog() != null) {
         // set update log to buffer before publishing the core
         getUpdateHandler().getUpdateLog().bufferUpdates();
       }
@@ -1496,7 +1498,7 @@ public class SolrCore implements SolrInfoBean, Closeable {
     try {
       final IndexInput input =
           dir.openInput(IndexFetcher.INDEX_PROPERTIES, DirectoryFactory.IOCONTEXT_NO_CACHE);
-      final InputStream is = new PropertiesInputStream(input);
+      final InputStream is = new IndexInputInputStream(input);
       try {
         p.load(new InputStreamReader(is, StandardCharsets.UTF_8));
       } catch (Exception e) {
@@ -2057,8 +2059,8 @@ public class SolrCore implements SolrInfoBean, Closeable {
   private int onDeckSearchers; // number of searchers preparing
   // Lock ordering: one can acquire the openSearcherLock and then the searcherLock, but not
   // vice-versa.
-  private Object searcherLock = new Object(); // the sync object for the searcher
-  private ReentrantLock openSearcherLock =
+  private final Object searcherLock = new Object(); // the sync object for the searcher
+  private final ReentrantLock openSearcherLock =
       new ReentrantLock(true); // used to serialize opens/reopens for absolute ordering
   private final int maxWarmingSearchers; // max number of on-deck searchers allowed
   private final int slowQueryThresholdMillis; // threshold above which a query is considered slow
@@ -2256,7 +2258,7 @@ public class SolrCore implements SolrInfoBean, Closeable {
   }
 
   public RefCounted<SolrIndexSearcher> getSearcher(
-      boolean forceNew, boolean returnSearcher, final Future<Void>[] waitSearcher) {
+      boolean forceNew, boolean returnSearcher, final Future<?>[] waitSearcher) {
     return getSearcher(forceNew, returnSearcher, waitSearcher, false);
   }
 
@@ -2493,7 +2495,7 @@ public class SolrCore implements SolrInfoBean, Closeable {
   public RefCounted<SolrIndexSearcher> getSearcher(
       boolean forceNew,
       boolean returnSearcher,
-      final Future<Void>[] waitSearcher,
+      final Future<?>[] waitSearcher,
       boolean updateHandlerReopens) {
     // it may take some time to open an index.... we may need to make
     // sure that two threads aren't trying to open one at the same time
@@ -2561,7 +2563,6 @@ public class SolrCore implements SolrInfoBean, Closeable {
     }
 
     // a signal to decrement onDeckSearchers if something goes wrong.
-    final boolean[] decrementOnDeckCount = new boolean[] {true};
     RefCounted<SolrIndexSearcher> currSearcherHolder = null; // searcher we are autowarming from
     RefCounted<SolrIndexSearcher> searchHolder = null;
     boolean success = false;
@@ -2586,7 +2587,6 @@ public class SolrCore implements SolrInfoBean, Closeable {
           // want to register this one before warming is complete instead of waiting.
           if (solrConfig.useColdSearcher) {
             registerSearcher(newSearchHolder);
-            decrementOnDeckCount[0] = false;
             alreadyRegistered = true;
           }
         } else {
@@ -2599,7 +2599,7 @@ public class SolrCore implements SolrInfoBean, Closeable {
       final SolrIndexSearcher currSearcher =
           currSearcherHolder == null ? null : currSearcherHolder.get();
 
-      Future<Void> future = null;
+      Future<?> future = null;
 
       // if the underlying searcher has not changed, no warming is needed
       if (newSearcher != currSearcher) {

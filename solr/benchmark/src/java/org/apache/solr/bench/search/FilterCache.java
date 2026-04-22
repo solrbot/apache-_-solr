@@ -19,9 +19,11 @@ package org.apache.solr.bench.search;
 import static org.apache.solr.bench.generators.SourceDSL.integers;
 
 import java.io.IOException;
-import java.net.HttpURLConnection;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.stream.Collectors;
 import org.apache.solr.bench.BaseBenchState;
 import org.apache.solr.bench.Docs;
 import org.apache.solr.bench.MiniClusterState;
@@ -109,26 +111,29 @@ public class FilterCache {
         throws SolrServerException, IOException {
       // Reload the collection/core to drop existing caches
       CollectionAdminRequest.Reload reload = CollectionAdminRequest.reloadCollection(COLLECTION);
-      miniClusterState.client.requestWithBaseUrl(miniClusterState.nodes.get(0), null, reload);
+      miniClusterState.client.requestWithBaseUrl(miniClusterState.nodes.get(0), reload, null);
     }
 
     @TearDown(Level.Iteration)
     public void dumpMetrics(MiniClusterState.MiniClusterBenchState miniClusterState) {
       // TODO add a verbose flag
 
-      String url =
-          miniClusterState.nodes.get(0)
-              + "/admin/metrics?prefix=CACHE.searcher.filterCache&omitHeader=true";
-      HttpURLConnection conn = null;
+      String url = miniClusterState.nodes.get(0) + "/admin/metrics?category=CACHE?wt=prometheus";
+      HttpClient client = HttpClient.newHttpClient();
       try {
-        conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
-        conn.connect();
-        BaseBenchState.log(
-            new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
-      } catch (IOException e) {
-        // ignored
-      } finally {
-        if (conn != null) conn.disconnect();
+        HttpRequest request = HttpRequest.newBuilder().uri(URI.create(url)).GET().build();
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+        // Filter to only lines containing filterCache metrics
+        String filteredMetrics =
+            response
+                .body()
+                .lines()
+                .filter(line -> line.contains("filterCache"))
+                .collect(Collectors.joining("\n"));
+        BaseBenchState.log(filteredMetrics);
+      } catch (IOException | InterruptedException e) {
+        throw new RuntimeException(e);
       }
     }
   }
@@ -139,8 +144,8 @@ public class FilterCache {
       throws SolrServerException, IOException {
     return miniClusterState.client.requestWithBaseUrl(
         benchState.baseUrl,
-        COLLECTION,
-        miniClusterState.getRandom().nextBoolean() ? benchState.q1 : benchState.q2);
+        miniClusterState.getRandom().nextBoolean() ? benchState.q1 : benchState.q2,
+        COLLECTION);
   }
 
   @Benchmark
@@ -148,6 +153,6 @@ public class FilterCache {
       BenchState benchState, MiniClusterState.MiniClusterBenchState miniClusterState)
       throws SolrServerException, IOException {
     return miniClusterState.client.requestWithBaseUrl(
-        benchState.baseUrl, COLLECTION, benchState.q1);
+        benchState.baseUrl, benchState.q1, COLLECTION);
   }
 }

@@ -22,15 +22,18 @@ import static org.apache.solr.bench.generators.SourceDSL.integers;
 import static org.apache.solr.bench.generators.SourceDSL.strings;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import org.apache.solr.bench.Docs;
 import org.apache.solr.bench.MiniClusterState;
 import org.apache.solr.bench.MiniClusterState.MiniClusterBenchState;
 import org.apache.solr.client.solrj.SolrServerException;
+import org.apache.solr.client.solrj.impl.InputStreamResponseParser;
 import org.apache.solr.client.solrj.impl.NoOpResponseParser;
 import org.apache.solr.client.solrj.request.QueryRequest;
 import org.apache.solr.common.params.CommonParams;
 import org.apache.solr.common.params.ModifiableSolrParams;
-import org.apache.solr.core.SolrCore;
+import org.apache.solr.common.util.NamedList;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -58,18 +61,7 @@ public class QueryResponseWriters {
   @State(Scope.Benchmark)
   public static class BenchState {
 
-    /** See {@link SolrCore#DEFAULT_RESPONSE_WRITERS} */
-    @Param({
-      CommonParams.JAVABIN,
-      CommonParams.JSON,
-      "cbor",
-      "smile",
-      "xml",
-      "python",
-      "phps",
-      "ruby",
-      "raw"
-    })
+    @Param({CommonParams.JAVABIN, CommonParams.JSON, "cbor", "smile", "xml"})
     String wt;
 
     private int docs = 100;
@@ -102,9 +94,14 @@ public class QueryResponseWriters {
   }
 
   @Benchmark
-  public Object query(
-      BenchState benchState, MiniClusterState.MiniClusterBenchState miniClusterState)
+  public Object query(BenchState benchState, MiniClusterState.MiniClusterBenchState solrBenchState)
       throws SolrServerException, IOException {
-    return miniClusterState.client.request(benchState.q, collection);
+    NamedList<Object> response = solrBenchState.client.request(benchState.q, collection);
+    // consume the stream completely
+    try (InputStream responseStream =
+        (InputStream) response.get(InputStreamResponseParser.STREAM_KEY)) {
+      responseStream.transferTo(OutputStream.nullOutputStream());
+    }
+    return response;
   }
 }

@@ -38,7 +38,6 @@ import jakarta.inject.Singleton;
 import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Collections;
@@ -71,6 +70,7 @@ import org.apache.solr.api.JerseyResource;
 import org.apache.solr.client.solrj.SolrRequest;
 import org.apache.solr.client.solrj.impl.Http2SolrClient;
 import org.apache.solr.client.solrj.impl.HttpClientUtil;
+import org.apache.solr.client.solrj.impl.HttpSolrClientBase;
 import org.apache.solr.client.solrj.impl.SolrHttpClientBuilder;
 import org.apache.solr.client.solrj.impl.SolrHttpClientContextBuilder;
 import org.apache.solr.client.solrj.impl.SolrHttpClientContextBuilder.AuthSchemeRegistryProvider;
@@ -446,6 +446,7 @@ public class CoreContainer {
     SolrPaths.AllowPathBuilder allowPathBuilder = new SolrPaths.AllowPathBuilder();
     allowPathBuilder.addPath(cfg.getSolrHome());
     allowPathBuilder.addPath(cfg.getCoreRootDirectory());
+    allowPathBuilder.addPath(cfg.getConfigSetBaseDirectory());
     if (cfg.getSolrDataHome() != null) {
       allowPathBuilder.addPath(cfg.getSolrDataHome());
     }
@@ -762,7 +763,7 @@ public class CoreContainer {
    *
    * @see #getDefaultHttpSolrClient()
    * @see ZkController#getSolrClient()
-   * @see Http2SolrClient#requestWithBaseUrl(String, String, SolrRequest)
+   * @see HttpSolrClientBase#requestWithBaseUrl(String, SolrRequest, String)
    * @deprecated likely to simply be moved to the ObjectCache so as to not be used
    */
   @Deprecated
@@ -1592,6 +1593,10 @@ public class CoreContainer {
         log.warn(msg);
         throw new SolrException(ErrorCode.CONFLICT, msg);
       }
+
+      // Validate 'instancePath' prior to instantiating CoreDescriptor, as CD construction attempts
+      // to read properties from 'instancePath'
+      assertPathAllowed(instancePath);
       CoreDescriptor cd =
           new CoreDescriptor(
               coreName, instancePath, parameters, getContainerProperties(), getZkController());
@@ -1606,8 +1611,7 @@ public class CoreContainer {
       }
 
       // Validate paths are relative to known locations to avoid path traversal
-      assertPathAllowed(cd.getInstanceDir());
-      assertPathAllowed(Paths.get(cd.getDataDir()));
+      assertPathAllowed(Path.of(cd.getDataDir()));
 
       boolean preExistingZkEntry = false;
       try {
@@ -1677,6 +1681,8 @@ public class CoreContainer {
       }
     }
   }
+
+  public static final String ALLOW_PATHS_SYSPROP = "solr.allowPaths";
 
   /**
    * Checks that the given path is relative to SOLR_HOME, SOLR_DATA_HOME, coreRootDirectory or one
@@ -1776,7 +1782,7 @@ public class CoreContainer {
     } catch (Exception e) {
       coreInitFailures.put(dcore.getName(), new CoreLoadFailure(dcore, e));
       if (e instanceof ZkController.NotInClusterStateException && !newCollection) {
-        // this mostly happens when the core is deleted when this node is down
+        // this mostly happens when the core is deleted when this node is down,
         // but it can also happen if connecting to the wrong zookeeper
         final boolean deleteUnknownCores =
             Boolean.parseBoolean(System.getProperty("solr.deleteUnknownCores", "false"));
@@ -1787,7 +1793,7 @@ public class CoreContainer {
             (deleteUnknownCores
                 ? " It will be deleted. See SOLR-13396 for more information."
                 : ""));
-        // We alreday have an ongoing CoreOp, so do not wait to start another one
+        // We already have an ongoing CoreOp, so do not wait to start another one
         unloadWithoutCoreOp(
             dcore.getName(), deleteUnknownCores, deleteUnknownCores, deleteUnknownCores);
         throw e;
@@ -2585,7 +2591,7 @@ public class CoreContainer {
    * <p>The caller does not need to close the client.
    *
    * @return the existing {@link Http2SolrClient}
-   * @see Http2SolrClient#requestWithBaseUrl(String, String, SolrRequest)
+   * @see HttpSolrClientBase#requestWithBaseUrl(String, SolrRequest, String)
    */
   public Http2SolrClient getDefaultHttpSolrClient() {
     return solrClientProvider.getSolrClient();

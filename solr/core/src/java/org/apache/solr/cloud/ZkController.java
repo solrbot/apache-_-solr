@@ -26,8 +26,13 @@ import static org.apache.solr.common.cloud.ZkStateReader.LIVE_NODE_ROLES;
 import static org.apache.solr.common.cloud.ZkStateReader.LIVE_NODE_SOLR_VERSION;
 import static org.apache.solr.common.cloud.ZkStateReader.NODE_NAME_PROP;
 import static org.apache.solr.common.cloud.ZkStateReader.REJOIN_AT_HEAD_PROP;
+import static org.apache.solr.common.cloud.ZkStateReader.REPLICATION_FACTOR;
 import static org.apache.solr.common.cloud.ZkStateReader.SHARD_ID_PROP;
+import static org.apache.solr.common.params.CollectionAdminParams.SYSTEM_COLL;
 import static org.apache.solr.common.params.CollectionParams.CollectionAction.ADDROLE;
+import static org.apache.solr.common.params.CollectionParams.CollectionAction.CREATE;
+import static org.apache.solr.common.params.CommonParams.NAME;
+import static org.apache.solr.common.params.CoreAdminParams.ACTION;
 import static org.apache.zookeeper.ZooDefs.Ids.OPEN_ACL_UNSAFE;
 
 import java.io.Closeable;
@@ -65,7 +70,6 @@ import org.apache.solr.client.solrj.cloud.SolrCloudManager;
 import org.apache.solr.client.solrj.impl.CloudHttp2SolrClient;
 import org.apache.solr.client.solrj.impl.CloudSolrClient;
 import org.apache.solr.client.solrj.impl.Http2SolrClient;
-import org.apache.solr.client.solrj.impl.HttpSolrClient.Builder;
 import org.apache.solr.client.solrj.impl.SolrClientCloudManager;
 import org.apache.solr.client.solrj.impl.SolrZkClientTimeout;
 import org.apache.solr.client.solrj.impl.ZkClientClusterStateProvider;
@@ -105,8 +109,10 @@ import org.apache.solr.common.cloud.ZkStateReader;
 import org.apache.solr.common.cloud.ZooKeeperException;
 import org.apache.solr.common.params.CollectionAdminParams;
 import org.apache.solr.common.params.CommonParams;
+import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.Compressor;
+import org.apache.solr.common.util.EnvUtils;
 import org.apache.solr.common.util.ExecutorUtil;
 import org.apache.solr.common.util.IOUtils;
 import org.apache.solr.common.util.ObjectReleaseTracker;
@@ -125,6 +131,8 @@ import org.apache.solr.core.SolrCoreInitializationException;
 import org.apache.solr.handler.component.HttpShardHandler;
 import org.apache.solr.handler.component.HttpShardHandlerFactory;
 import org.apache.solr.logging.MDCLoggingContext;
+import org.apache.solr.request.LocalSolrQueryRequest;
+import org.apache.solr.response.SolrQueryResponse;
 import org.apache.solr.search.SolrIndexSearcher;
 import org.apache.solr.update.UpdateLog;
 import org.apache.solr.util.AddressUtils;
@@ -596,6 +604,53 @@ public class ZkController implements Closeable {
     }
   }
 
+  /**
+   * Checks version compatibility with other nodes in the cluster. Refuses to start if there's a
+   * major.minor version difference between our Solr version and other nodes in the cluster. Note:
+   * uses live nodes.
+   */
+  private void checkClusterVersionCompatibility() throws InterruptedException, KeeperException {
+    Optional<SolrVersion> lowestVersion = zkStateReader.fetchLowestSolrVersion();
+    if (lowestVersion.isPresent()) {
+      SolrVersion ourVersion = SolrVersion.LATEST;
+      SolrVersion clusterVersion = lowestVersion.get();
+
+      if (ourVersion.lessThan(clusterVersion)) {
+        log.warn(
+            "Our Solr version {} is older than cluster version {}", ourVersion, clusterVersion);
+
+        if (EnvUtils.getPropertyAsBool("solr.cloud.downgrade.enabled", false)) {
+          return;
+        }
+
+        // Check major version compatibility
+        if (ourVersion.getMajorVersion() < clusterVersion.getMajorVersion()) {
+          String message =
+              String.format(
+                  Locale.ROOT,
+                  "Refusing to start Solr, since our version is lower than the lowest version currently running in the cluster. "
+                      + "Our version: %s, lowest version in cluster: %s.",
+                  ourVersion,
+                  clusterVersion);
+          throw new SolrException(ErrorCode.INVALID_STATE, message);
+        }
+
+        // Check minor version compatibility within the same major version
+        if (ourVersion.getMajorVersion() == clusterVersion.getMajorVersion()
+            && ourVersion.getMinorVersion() < clusterVersion.getMinorVersion()) {
+          String message =
+              String.format(
+                  Locale.ROOT,
+                  "Refusing to start Solr, since our version is lower than the lowest version currently running in the cluster. "
+                      + "Our version: %s, lowest version in cluster: %s.",
+                  ourVersion,
+                  clusterVersion);
+          throw new SolrException(ErrorCode.INVALID_STATE, message);
+        }
+      }
+    }
+  }
+
   public CloudSolrClient getSolrClient() {
     return getSolrCloudManager().getSolrClient();
   }
@@ -983,6 +1038,7 @@ public class ZkController implements Closeable {
 
       checkForExistingEphemeralNode();
       registerLiveNodesListener();
+      checkClusterVersionCompatibility();
 
       // start the overseer first as following code may need it's processing
       if (!zkRunOnly) {
@@ -2209,10 +2265,12 @@ public class ZkController implements Closeable {
 
         // short timeouts, we may be in a storm and this is best effort, and maybe we should be the
         // leader now
+        // TODO ideally want 8sec connection timeout but can't easily also share the client
+        // listeners
         try (SolrClient client =
-            new Builder(leaderBaseUrl)
-                .withConnectionTimeout(8000, TimeUnit.MILLISECONDS)
-                .withSocketTimeout(30000, TimeUnit.MILLISECONDS)
+            new Http2SolrClient.Builder(leaderBaseUrl)
+                .withHttpClient(getCoreContainer().getDefaultHttpSolrClient())
+                .withIdleTimeout(30000, TimeUnit.MILLISECONDS)
                 .build()) {
           WaitForState prepCmd = new WaitForState();
           prepCmd.setCoreName(leaderCoreName);
@@ -3024,8 +3082,7 @@ public class ZkController implements Closeable {
         }
         registeredSearcher.decref();
       } else {
-        @SuppressWarnings("unchecked")
-        Future<Void>[] waitSearcher = (Future<Void>[]) Array.newInstance(Future.class, 1);
+        Future<?>[] waitSearcher = (Future<?>[]) Array.newInstance(Future.class, 1);
         if (log.isInfoEnabled()) {
           log.info(
               "No registered searcher found for core: {}, waiting until a searcher is registered before publishing as active",
@@ -3093,5 +3150,41 @@ public class ZkController implements Closeable {
         newestSearcher.decref();
       }
     }
+  }
+
+  /** Creates the .system collection if it doesn't exist. Returns true iff this created it. */
+  public boolean createSystemColl() throws Exception {
+    if (getClusterState().hasCollection(SYSTEM_COLL)) {
+      return false;
+    }
+    log.info("Going to auto-create {} collection", SYSTEM_COLL);
+    SolrQueryResponse rsp = new SolrQueryResponse();
+    String repFactor = String.valueOf(Math.min(3, getClusterState().getLiveNodes().size()));
+    cc.getCollectionsHandler()
+        .handleRequestBody(
+            new LocalSolrQueryRequest(
+                null,
+                new ModifiableSolrParams()
+                    .add(ACTION, CREATE.toString())
+                    .add(NAME, SYSTEM_COLL)
+                    .add(REPLICATION_FACTOR, repFactor)),
+            rsp);
+    if (rsp.getValues().get("success") == null) {
+      throw new SolrException(
+          ErrorCode.SERVER_ERROR,
+          "Could not auto-create "
+              + SYSTEM_COLL
+              + " collection: "
+              + Utils.toJSONString(rsp.getValues()));
+    }
+
+    try {
+      getZkStateReader().waitForState(SYSTEM_COLL, 3, TimeUnit.SECONDS, Objects::nonNull);
+    } catch (TimeoutException e) {
+      throw new SolrException(
+          ErrorCode.SERVER_ERROR,
+          "Could not find " + SYSTEM_COLL + " collection even after 3 seconds");
+    }
+    return true;
   }
 }

@@ -28,6 +28,14 @@ You should also consider all changes that have been made to Solr in any version 
 
 A thorough review of the list in xref:major-changes-in-earlier-8-x-versions[Major Changes in Earlier 8.x Versions] as well as the {solr-javadocs}/changes/Changes.html[CHANGES.txt] in your Solr instance will help you plan your migration to Solr 9.
 
+There is a new limitation introduced in Solr 9.10, and that which is especially relevant to Solr 10
+and beyond.
+A Solr node will now fail to start if it's major.minor version (e.g. 9.10) is *lower* than that of any existing Solr node in a SolrCloud cluster (as reported by info in "live_node").
+What this
+means is that Solr supports rolling _upgrades_ but not rolling _downgrades_ spanning a major version.
+This compatibility safeguard can be toggled with "SOLR_CLOUD_DOWNGRADE_ENABLED".
+
+
 === Upgrade Prerequisites
 
 *Solr 9 requires Java 11 as minimum Java version and is also tested with Java 17.*
@@ -66,6 +74,48 @@ It is always strongly recommended that you fully reindex your documents after a 
 
 In Solr 8, it was possible to add docValues to a schema without re-indexing via `UninvertDocValuesMergePolicy`, an advanced/expert utility.
 Due to changes in Lucene 9, that isn't possible any more.
+
+== Solr 9.11
+
+=== Max distributed requests now configurable
+
+The internal HTTP client used for distributed shard sub-requests previously had a hard-coded limit of 1000 concurrent async requests per node.
+In large clusters, a single query can fan out to hundreds of sub-requests, quickly exhausting this limit and causing requests to queue, potentially leading to stalls or timeouts.
+This limit is now configurable via the system property `solr.solrj.http.jetty.async_requests.max`.
+
+Current permit utilization can be monitored via the `solr_client_request_async_permits` metric (see xref:deployment-guide:metrics-reporting.adoc#http-client-registry[HTTP Client Registry]).
+
+=== Docker
+
+The `gosu` binary is no longer installed in the Solr Docker image. See https://github.com/tianon/gosu[gosu github page] for alternatives, such as `runuser`, `setpriv` or `chroot`.
+
+=== Removing 'local' Tika
+
+The project normally doesn't remove functionality in a minor release, but we made an exception to avoid shipping Tika 1.x with known vulnerabilities.
+
+* LocalTikaExtractionBackend, which was deprecated in 9.10, has been removed. The `tikaserver` extraction backend is now the only supported backend for the ExtractingRequestHandler, and the default. Users must configure a Tika Server URL via the `tikaserver.url` parameter. (SOLR-17961, SOLR-18037)
+
++NOTE: The previous parse-context-based configuration (`parseContext.config`) is no longer supported. Tika parser-specific properties must now be configured directly on the Tika Server itself, rather than through Solr configuration. Please refer to the Tika Server documentation for details on how to set these properties.
+
+== Solr 9.10
+
+=== SolrJ
+
+SolrJ users not using SolrClients that use Apache HttpClient can safely exclude those dependencies.
+SolrJ users not using SolrClients that use Jetty HttpClient can safely exclude those dependencies.
+
+=== Java Security Manager
+
+Java has removed support for the Security Manager starting with Java 24; therefore, Solr will disable this feature when run with Java 24 or later. Solr previously used the Security Manager to provide an additional layer of protection against unintended file system access, network access, and process execution. Users upgrading to Java 24 or later should review their security practices and consider alternative measures, such as running Solr in containers or implementing additional operating system-level controls.
+
+=== Deprecations
+
+The `XLSXResponseWriter` is now deprecated.
+
+The Tika Language Identifier is deprecated. Use one of the other detectors instead.
+
+The Extraction module can now extract documents using an external Tika Server.
+The local in-process Tika 1.x extractor backend is deprecated and will go away in 10.0.
 
 == Solr 9.9
 
@@ -247,7 +297,7 @@ Use `solr.useExitableDirectoryReader` to use the previous behavior.
 Please share your experience with Solr developers!
 The previous behavior should not be enabled if timeAllowed isn't used because unfortunately its performance tax is now imposed on all queries, even those without timeAllowed.
 
-=== v2 API 
+=== v2 API
 * Solr's experimental "v2" API has seen a number of improvements in the 9.3 release.
 +
 It is now approaching parity with the functionality offered by Solr's v1 API.  In particular 9.3 adds v2 "CRUD" endpoints for interacting with alias properties and collection snapshots.  Several lower-level "replication" APIs now also offer v2 equivalents.

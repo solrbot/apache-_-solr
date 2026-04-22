@@ -17,26 +17,35 @@
 
 package org.apache.solr.client.solrj.impl;
 
+import static org.apache.solr.client.solrj.impl.BaseHttpClusterStateProvider.SYS_PROP_CACHE_TIMEOUT_SECONDS;
 import static org.apache.solr.common.util.URLUtil.getNodeNameForBaseUrl;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
 
 import com.carrotsearch.randomizedtesting.annotations.ParametersFactory;
 import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.lang.reflect.InvocationTargetException;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.request.CollectionAdminRequest;
 import org.apache.solr.client.solrj.response.CollectionAdminResponse;
 import org.apache.solr.cloud.SolrCloudTestCase;
+import org.apache.solr.cloud.ZkController;
+import org.apache.solr.cloud.ZkTestServer;
+import org.apache.solr.common.cloud.ClusterProperties;
 import org.apache.solr.common.cloud.ClusterState;
 import org.apache.solr.common.cloud.DocCollection;
+import org.apache.solr.common.cloud.SolrZkClient;
+import org.apache.solr.common.cloud.ZkStateReader;
 import org.apache.solr.common.util.NamedList;
 import org.eclipse.jetty.http.HttpField;
 import org.eclipse.jetty.http.HttpHeader;
@@ -46,6 +55,7 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 public class ClusterStateProviderTest extends SolrCloudTestCase {
+  private static final String SOLR_SSL_ENABLED = "solr.ssl.enabled";
 
   @BeforeClass
   public static void setupCluster() throws Exception {
@@ -60,7 +70,7 @@ public class ClusterStateProviderTest extends SolrCloudTestCase {
                 .resolve("conf"))
         .configure();
     cluster.waitForAllNodes(30);
-    System.setProperty("solr.solrj.cache.timeout.sec", "1");
+    System.setProperty(SYS_PROP_CACHE_TIMEOUT_SECONDS, "1");
   }
 
   @After
@@ -346,9 +356,17 @@ public class ClusterStateProviderTest extends SolrCloudTestCase {
       cluster.stopJettySolrRunner(jettyNode2);
       waitForCSPCacheTimeout();
 
+      long startTimeNs = System.nanoTime();
       actualKnownNodes = cspHttp.getLiveNodes();
+      long liveNodeFetchTimeMs =
+          TimeUnit.MILLISECONDS.convert(System.nanoTime() - startTimeNs, TimeUnit.NANOSECONDS);
       assertEquals(1, actualKnownNodes.size());
       assertEquals(Set.of(nodeName3), actualKnownNodes);
+      // This should already be cached, because it is being updated in the background
+      assertThat(
+          "Cached getLiveNodes() should take no more than 2 milliseconds",
+          liveNodeFetchTimeMs,
+          lessThanOrEqualTo(2L));
 
       // Bring back a backup node and take down the new node
       cluster.startJettySolrRunner(jettyNode2, true);
@@ -358,6 +376,62 @@ public class ClusterStateProviderTest extends SolrCloudTestCase {
       actualKnownNodes = cspHttp.getLiveNodes();
       assertEquals(1, actualKnownNodes.size());
       assertEquals(Set.of(nodeName2), actualKnownNodes);
+    }
+  }
+
+  @Test
+  public void testHttpClusterStateProviderUrlScheme() throws Exception {
+    final List<String> solrUrls =
+        List.of("https://localhost:8983/solr", "https://localhost:8984/solr");
+    try (var httpClient = new Http2SolrClient.Builder().build();
+        ClusterStateProvider clusterStateProvider =
+            new Http2ClusterStateProvider(solrUrls, httpClient)) {
+      assertEquals("https", clusterStateProvider.getUrlScheme());
+    }
+  }
+
+  @Test
+  public void testZkClusterStateProviderUrlScheme() throws Exception {
+    final Path zkDir = createTempDir("zkData");
+
+    final ZkTestServer server = new ZkTestServer(zkDir);
+    try {
+      server.run();
+      SolrZkClient client = new SolrZkClient.Builder().withUrl(server.getZkAddress()).build();
+      ZkController.createClusterZkNodes(client);
+      testUrlSchemeWithClusterProperties(client);
+      testUrlSchemeDefault(client);
+      testUrlSchemeWithSystemProperties(client);
+      client.close();
+    } finally {
+      server.shutdown();
+    }
+  }
+
+  private void testUrlSchemeDefault(SolrZkClient client) throws Exception {
+    try (var zkStateReader = new ZkStateReader(client);
+        var clusterStateProvider = new ZkClientClusterStateProvider(zkStateReader)) {
+      assertEquals("http", clusterStateProvider.getUrlScheme());
+    }
+  }
+
+  private void testUrlSchemeWithSystemProperties(SolrZkClient client) throws Exception {
+    System.setProperty(SOLR_SSL_ENABLED, "true");
+    try (var zkStateReader = new ZkStateReader(client);
+        var clusterStateProvider = new ZkClientClusterStateProvider(zkStateReader)) {
+      assertEquals("https", clusterStateProvider.getUrlScheme());
+    } finally {
+      System.clearProperty(SOLR_SSL_ENABLED);
+    }
+  }
+
+  private void testUrlSchemeWithClusterProperties(SolrZkClient client) throws Exception {
+    ClusterProperties cp = new ClusterProperties(client);
+    cp.setClusterProperty("urlScheme", "ftp");
+    try (var zkStateReader = new ZkStateReader(client);
+        var clusterStateProvider = new ZkClientClusterStateProvider(zkStateReader)) {
+      zkStateReader.createClusterStateWatchersAndUpdate();
+      assertEquals("ftp", clusterStateProvider.getUrlScheme());
     }
   }
 

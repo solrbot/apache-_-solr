@@ -19,11 +19,7 @@ package org.apache.solr.servlet;
 import static org.apache.solr.common.cloud.ZkStateReader.COLLECTION_PROP;
 import static org.apache.solr.common.cloud.ZkStateReader.CORE_NAME_PROP;
 import static org.apache.solr.common.cloud.ZkStateReader.NODE_NAME_PROP;
-import static org.apache.solr.common.cloud.ZkStateReader.REPLICATION_FACTOR;
 import static org.apache.solr.common.params.CollectionAdminParams.SYSTEM_COLL;
-import static org.apache.solr.common.params.CollectionParams.CollectionAction.CREATE;
-import static org.apache.solr.common.params.CommonParams.NAME;
-import static org.apache.solr.common.params.CoreAdminParams.ACTION;
 import static org.apache.solr.servlet.SolrDispatchFilter.Action.ADMIN;
 import static org.apache.solr.servlet.SolrDispatchFilter.Action.FORWARD;
 import static org.apache.solr.servlet.SolrDispatchFilter.Action.PASSTHROUGH;
@@ -55,13 +51,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import net.jcip.annotations.ThreadSafe;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.http.Header;
 import org.apache.http.HeaderIterator;
 import org.apache.http.HttpEntity;
@@ -82,6 +77,7 @@ import org.apache.solr.api.V2HttpCall;
 import org.apache.solr.client.api.util.SolrVersion;
 import org.apache.solr.client.solrj.impl.CloudSolrClient;
 import org.apache.solr.client.solrj.impl.HttpClientUtil;
+import org.apache.solr.cloud.ZkController;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.cloud.Aliases;
@@ -109,7 +105,6 @@ import org.apache.solr.core.CoreContainer;
 import org.apache.solr.core.SolrConfig;
 import org.apache.solr.core.SolrCore;
 import org.apache.solr.handler.ContentStreamHandlerBase;
-import org.apache.solr.request.LocalSolrQueryRequest;
 import org.apache.solr.request.SolrQueryRequest;
 import org.apache.solr.request.SolrQueryRequestBase;
 import org.apache.solr.request.SolrRequestHandler;
@@ -182,12 +177,19 @@ public class HttpSolrCall {
     this.response = response;
     this.retry = retry;
     this.requestType = RequestType.UNKNOWN;
+    normalizeAndSetPath(ServletUtils.getPathAfterContext(req));
+
     req.setAttribute(HttpSolrCall.class.getName(), this);
     // set a request timer which can be reused by requests if needed
     req.setAttribute(SolrRequestParsers.REQUEST_TIMER_SERVLET_ATTRIBUTE, new RTimerTree());
     // put the core container in request attribute
     req.setAttribute("org.apache.solr.CoreContainer", cores);
     path = ServletUtils.getPathAfterContext(req);
+  }
+
+  @SuppressForbidden(reason = "JDK String class doesn't offer a stripEnd equivalent")
+  protected void normalizeAndSetPath(String unnormalizedPath) {
+    this.path = StringUtils.stripEnd(unnormalizedPath, "/");
   }
 
   public String getPath() {
@@ -241,7 +243,7 @@ public class HttpSolrCall {
       // Try to resolve a Solr core name
       core = cores.getCore(origCorename);
       if (core != null) {
-        path = path.substring(idx);
+        normalizeAndSetPath(path.substring(idx));
       } else {
         // extra mem barriers, so don't look at this before trying to get core
         if (cores.isCoreLoading(origCorename)) {
@@ -250,7 +252,7 @@ public class HttpSolrCall {
         // the core may have just finished loading
         core = cores.getCore(origCorename);
         if (core != null) {
-          path = path.substring(idx);
+          normalizeAndSetPath(path.substring(idx));
         } else {
           if (!cores.isZooKeeperAware()) {
             core = cores.getCore("");
@@ -279,14 +281,14 @@ public class HttpSolrCall {
         core = getCoreByCollection(collectionName, isPreferLeader);
         if (core != null) {
           if (idx > 0) {
-            path = path.substring(idx);
+            normalizeAndSetPath(path.substring(idx));
           }
         } else {
           // if we couldn't find it locally, look on other nodes
           if (idx > 0) {
             extractRemotePath(collectionName, origCorename);
             if (action == REMOTEQUERY) {
-              path = path.substring(idx);
+              normalizeAndSetPath(path.substring(idx));
               return;
             }
           }
@@ -348,7 +350,7 @@ public class HttpSolrCall {
     }
     ZkStateReader zkStateReader = cores.getZkController().getZkStateReader();
     Supplier<DocCollection> logic =
-        () -> zkStateReader.getClusterState().getCollectionOrNull(collectionName);
+        () -> zkStateReader.getClusterState().getCollectionOrNull(collectionName, true);
 
     DocCollection docCollection = logic.get();
     if (docCollection != null) {
@@ -366,46 +368,10 @@ public class HttpSolrCall {
   }
 
   protected void autoCreateSystemColl(String corename) throws Exception {
-    if (core == null
-        && SYSTEM_COLL.equals(corename)
-        && "POST".equals(req.getMethod())
-        && !cores.getZkController().getClusterState().hasCollection(SYSTEM_COLL)) {
-      log.info("Going to auto-create {} collection", SYSTEM_COLL);
-      SolrQueryResponse rsp = new SolrQueryResponse();
-      String repFactor =
-          String.valueOf(
-              Math.min(3, cores.getZkController().getClusterState().getLiveNodes().size()));
-      cores
-          .getCollectionsHandler()
-          .handleRequestBody(
-              new LocalSolrQueryRequest(
-                  null,
-                  new ModifiableSolrParams()
-                      .add(ACTION, CREATE.toString())
-                      .add(NAME, SYSTEM_COLL)
-                      .add(REPLICATION_FACTOR, repFactor)),
-              rsp);
-      if (rsp.getValues().get("success") == null) {
-        throw new SolrException(
-            ErrorCode.SERVER_ERROR,
-            "Could not auto-create "
-                + SYSTEM_COLL
-                + " collection: "
-                + Utils.toJSONString(rsp.getValues()));
+    if (core == null && SYSTEM_COLL.equals(corename) && "POST".equals(req.getMethod())) {
+      if (cores.getZkController().createSystemColl()) {
+        action = RETRY;
       }
-
-      try {
-        cores
-            .getZkController()
-            .getZkStateReader()
-            .waitForState(SYSTEM_COLL, 3, TimeUnit.SECONDS, Objects::nonNull);
-      } catch (TimeoutException e) {
-        throw new SolrException(
-            ErrorCode.SERVER_ERROR,
-            "Could not find " + SYSTEM_COLL + " collection even after 3 seconds");
-      }
-
-      action = RETRY;
     }
   }
 
@@ -838,7 +804,7 @@ public class HttpSolrCall {
                   + forwardCount,
               e));
     } finally {
-      Utils.consumeFully(httpEntity);
+      HttpClientUtil.consumeFully(httpEntity);
     }
   }
 
@@ -1124,7 +1090,7 @@ public class HttpSolrCall {
   protected String getRemoteCoreUrl(String collectionName, String origCorename)
       throws SolrException {
     ClusterState clusterState = cores.getZkController().getClusterState();
-    final DocCollection docCollection = clusterState.getCollectionOrNull(collectionName);
+    final DocCollection docCollection = clusterState.getCollectionOrNull(collectionName, true);
     Slice[] slices = (docCollection != null) ? docCollection.getActiveSlicesArr() : null;
     List<Slice> activeSlices;
     boolean byCoreName = false;
@@ -1341,6 +1307,19 @@ public class HttpSolrCall {
 
   protected Map<String, JsonSchemaValidator> getValidators() {
     return Collections.emptyMap();
+  }
+
+  /**
+   * The URL to this core, e.g. {@code http://localhost:8983/solr}.
+   *
+   * @see ZkController#getBaseUrl()
+   */
+  public String getThisNodeUrl() {
+    String scheme = getReq().getScheme();
+    String host = getReq().getServerName();
+    int port = getReq().getServerPort();
+    String context = getReq().getContextPath();
+    return String.format(Locale.ROOT, "%s://%s:%d%s", scheme, host, port, context);
   }
 
   /** A faster method for randomly picking items when you do not need to consume all items. */

@@ -16,6 +16,7 @@
  */
 package org.apache.solr.client.solrj.impl;
 
+import static org.apache.solr.client.solrj.impl.BaseHttpClusterStateProvider.SYS_PROP_CACHE_TIMEOUT_SECONDS;
 import static org.apache.solr.client.solrj.impl.CloudSolrClient.RouteResponse;
 
 import java.io.IOException;
@@ -95,6 +96,10 @@ public class CloudHttp2SolrClientTest extends SolrCloudTestCase {
   @BeforeClass
   public static void setupCluster() throws Exception {
     System.setProperty("metricsEnabled", "true");
+    // BaseHttpClusterStateProvider has a background job that pre-fetches data from CLUSTERSTATUS
+    // on timed intervals.  This can pollute this test, so we set the interval very high to
+    // prevent it from running.
+    System.setProperty(SYS_PROP_CACHE_TIMEOUT_SECONDS, "" + Integer.MAX_VALUE);
     configureCluster(NODE_COUNT)
         .addConfig(
             "conf",
@@ -253,6 +258,9 @@ public class CloudHttp2SolrClientTest extends SolrCloudTestCase {
   @Test
   @LogLevel("org.apache.solr.servlet.HttpSolrCall=DEBUG")
   public void testHttpCspPerf() throws Exception {
+    // This ensures CH2SC is caching cluster status by counting the number of logged calls to the
+    // admin endpoint. Too many calls to CLUSTERSTATUS might mean insufficient caching and
+    // performance regressions!
 
     String collectionName = "HTTPCSPTEST";
     CollectionAdminRequest.createCollection(collectionName, "conf", 2, 1)
@@ -295,6 +303,9 @@ public class CloudHttp2SolrClientTest extends SolrCloudTestCase {
         assertEquals(2, adminLogs.getCount());
       }
     }
+
+    // Clean up the collection to allow test iterations to succeed
+    CollectionAdminRequest.deleteCollection(collectionName).process(cluster.getSolrClient());
   }
 
   private CloudSolrClient createHttpCSPBasedCloudSolrClient() {

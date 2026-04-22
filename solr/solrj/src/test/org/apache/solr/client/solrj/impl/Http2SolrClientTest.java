@@ -138,7 +138,7 @@ public class Http2SolrClientTest extends HttpSolrClientTestBase {
     try (Http2SolrClient client = new Http2SolrClient.Builder(null).build()) {
       try {
         // if client base url is null, request url will be used in exception message
-        client.requestWithBaseUrl(getBaseUrl() + DEBUG_SERVLET_PATH, DEFAULT_CORE, new SolrPing());
+        client.requestWithBaseUrl(getBaseUrl() + DEBUG_SERVLET_PATH, new SolrPing(), DEFAULT_CORE);
 
         fail("Didn't get excepted exception from oversided request");
       } catch (SolrException e) {
@@ -231,7 +231,7 @@ public class Http2SolrClientTest extends HttpSolrClientTestBase {
     try (Http2SolrClient client =
         new Http2SolrClient.Builder(defaultUrl).withDefaultCollection(DEFAULT_CORE).build()) {
       try {
-        client.requestWithBaseUrl(baseUrlToUse, null, new QueryRequest(queryParams));
+        client.requestWithBaseUrl(baseUrlToUse, new QueryRequest(queryParams), null);
       } catch (BaseHttpSolrClient.RemoteSolrException rse) {
       }
 
@@ -525,7 +525,7 @@ public class Http2SolrClientTest extends HttpSolrClientTestBase {
     System.setProperty(
         PreemptiveBasicAuthClientBuilderFactory.SYS_PROP_BASIC_AUTH_CREDENTIALS, "foo:bar");
     System.setProperty(
-        HttpClientUtil.SYS_PROP_HTTP_CLIENT_BUILDER_FACTORY,
+        SolrHttpConstants.SYS_PROP_HTTP_CLIENT_BUILDER_FACTORY,
         PreemptiveBasicAuthClientBuilderFactory.class.getName());
     // Hack to ensure we get a new set of parameters for this test
     PreemptiveBasicAuthClientBuilderFactory.setDefaultSolrParams(
@@ -553,7 +553,7 @@ public class Http2SolrClientTest extends HttpSolrClientTestBase {
           authorizationHeader);
     } finally {
       System.clearProperty(PreemptiveBasicAuthClientBuilderFactory.SYS_PROP_BASIC_AUTH_CREDENTIALS);
-      System.clearProperty(HttpClientUtil.SYS_PROP_HTTP_CLIENT_BUILDER_FACTORY);
+      System.clearProperty(SolrHttpConstants.SYS_PROP_HTTP_CLIENT_BUILDER_FACTORY);
       PreemptiveBasicAuthClientBuilderFactory.setDefaultSolrParams(
           new MapSolrParams(new HashMap<>()));
     }
@@ -631,7 +631,7 @@ public class Http2SolrClientTest extends HttpSolrClientTestBase {
 
   @Test
   public void testBadHttpFactory() {
-    System.setProperty(HttpClientUtil.SYS_PROP_HTTP_CLIENT_BUILDER_FACTORY, "FakeClassName");
+    System.setProperty(SolrHttpConstants.SYS_PROP_HTTP_CLIENT_BUILDER_FACTORY, "FakeClassName");
     try {
       SolrClient client =
           new Http2SolrClient.Builder(getBaseUrl() + DEBUG_SERVLET_PATH)
