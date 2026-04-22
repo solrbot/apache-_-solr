@@ -42,6 +42,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 
@@ -107,18 +108,18 @@ public class S3BackupRepositoryTest extends AbstractBackupRepositoryTest {
       repo.createDirectory(path);
       assertTrue(repo.exists(path));
       assertEquals(BackupRepository.PathType.DIRECTORY, repo.getPathType(path));
-      assertEquals("No files should exist in dir yet", repo.listAll(path).length, 0);
+      assertEquals("No files should exist in dir yet", 0, repo.listAll(path).length);
 
       URI subDir = new URI("/test/dir/");
       repo.createDirectory(subDir);
       assertTrue(repo.exists(subDir));
       assertEquals(BackupRepository.PathType.DIRECTORY, repo.getPathType(subDir));
-      assertEquals("No files should exist in subdir yet", repo.listAll(subDir).length, 0);
+      assertEquals("No files should exist in subdir yet", 0, repo.listAll(subDir).length);
 
       assertEquals(
           "subDir should now be returned when listing all in parent dir",
-          repo.listAll(path).length,
-          1);
+          1,
+          repo.listAll(path).length);
 
       repo.deleteDirectory(path);
       assertFalse(repo.exists(path));
@@ -338,7 +339,10 @@ public class S3BackupRepositoryTest extends AbstractBackupRepositoryTest {
   private File pullObject(String path) throws IOException {
     try (S3Client s3 = S3_MOCK_RULE.createS3ClientV2()) {
       File file = temporaryFolder.newFile();
-      InputStream input = s3.getObject(b -> b.bucket(BUCKET_NAME).key(path));
+      InputStream input =
+          s3.getObject(
+              b -> b.bucket(BUCKET_NAME).key(path),
+              ResponseTransformer.toInputStream(java.time.Duration.ZERO));
       FileUtils.copyInputStreamToFile(input, file);
       return file;
     }
