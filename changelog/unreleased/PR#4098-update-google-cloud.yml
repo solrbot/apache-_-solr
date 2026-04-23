@@ -1,4 +1,4 @@
-title: "Move Google cloud dependencies to resolving google-cloud-bom. Bump to 0.261.0"
+title: Update Google Cloud
 type: dependency_update
 authors:
 - name: solrbot
