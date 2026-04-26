@@ -1,0 +1,7 @@
+title: Update docker/login-action action to v4
+type: dependency_update
+authors:
+- name: solrbot
+links:
+- name: PR#4355
+  url: https://github.com/apache/solr/pull/4355
